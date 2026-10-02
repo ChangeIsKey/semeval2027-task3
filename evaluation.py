@@ -2,16 +2,13 @@ import argparse
 import json
 import zipfile
 from pathlib import Path
-
 import bcubed
 from scipy.stats import spearmanr
 from sklearn.metrics import f1_score
-
+from collections import Counter, defaultdict
 from evaluation_utils import (
-    load_gold_label_counts,
-    load_label_counts,
-    calculate_JSD_distances,
     load_subtask1_labels,
+    calculate_JSD_distances,
     load_subtask2_labels,
 )
 
@@ -68,49 +65,114 @@ def compute_spearman(gold_JSD, predicted_JSD, filename):
 
 
 def compute_f1_score(gold_labels, predicted_labels, filename):
-    predicted_labels_ = []
-    gold_labels_ = []
+    # Group instances by word.
+    by_word = defaultdict(list)
 
     for item in gold_labels:
-        if item in predicted_labels:
-            predicted_labels_.append(predicted_labels[item])
-            gold_labels_.append(gold_labels[item])
-        else:
-            word, sentence_id = item.split(";")
+        if item not in predicted_labels:
+            word, sentence_id = item.split(";", 1)
             raise Exception(
                 f"SUBTASK2: Label missing in {filename} "
                 f"for {sentence_id} of word {word}"
             )
 
-    return float(f1_score(gold_labels_, predicted_labels_))
+        word, sentence_id = item.split(";", 1)
+        by_word[word].append(item)
+
+    word_scores = {}
+
+    for word, items in by_word.items():
+        gold_word = [
+            gold_labels[item]
+            for item in items
+        ]
+
+        predicted_word = [
+            predicted_labels[item]
+            for item in items
+        ]
+
+        f1 = f1_score(
+            gold_word,
+            predicted_word,
+        )
+
+        word_scores[word] = float(f1)
+
+    # Macro-average F1 across words.
+    macro_f1 = sum(word_scores.values()) / len(word_scores)
+
+    return macro_f1
 
 
 def compute_bcubed(gold_labels, predicted_labels, filename):
-    predicted_labels_ = {}
-    gold_labels_ = {}
+    # Group instances by word.
+    by_word = defaultdict(list)
 
-    for j, item in enumerate(gold_labels):
-        if item in predicted_labels:
-            # Gold goes into gold_labels_, predictions into predicted_labels_.
-            gold_labels_[j] = set(gold_labels[item])
-            predicted_labels_[j] = set(predicted_labels[item])
-        else:
-            word, sentence_id = item.split(";")
+    for item in gold_labels:
+        if item not in predicted_labels:
+            word, sentence_id = item.split(";", 1)
             raise Exception(
                 f"SUBTASK1a: Label missing in {filename} "
                 f"for {sentence_id} of word {word}"
             )
 
-    precision = bcubed.precision(gold_labels_, predicted_labels_)
-    recall = bcubed.recall(gold_labels_, predicted_labels_)
-    fcubed = bcubed.fscore(precision, recall, beta=1.0)
+        word, sentence_id = item.split(";", 1)
+        by_word[word].append(item)
+
+    word_scores = {}
+
+    for word, items in by_word.items():
+        gold_word = {}
+        predicted_word = {}
+
+        # bcubed expects:
+        # entity -> set of cluster memberships
+        for j, item in enumerate(items):
+            gold_word[j] = set(gold_labels[item])
+            predicted_word[j] = set(predicted_labels[item])
+
+        precision = bcubed.precision(
+            gold_word,
+            predicted_word,
+        )
+        recall = bcubed.recall(
+            gold_word,
+            predicted_word,
+        )
+        fcubed = bcubed.fscore(
+            precision,
+            recall,
+            beta=1.0,
+        )
+
+        word_scores[word] = {
+            "precision": float(precision),
+            "recall": float(recall),
+            "fcubed": float(fcubed),
+        }
+
+    # Macro-average across words.
+    precision = sum(
+        scores["precision"]
+        for scores in word_scores.values()
+    ) / len(word_scores)
+
+    recall = sum(
+        scores["recall"]
+        for scores in word_scores.values()
+    ) / len(word_scores)
+
+    fcubed = sum(
+        scores["fcubed"]
+        for scores in word_scores.values()
+    ) / len(word_scores)
 
     return {
-        "precision": float(precision),
-        "recall": float(recall),
-        "fcubed": float(fcubed),
+        "precision": precision,
+        "recall": recall,
+        "fcubed": fcubed,
     }
-
 
 def filter_jsd_by_min_instances(jsd, gold_counts, min_instances=10):
     filtered = {}
@@ -128,8 +190,7 @@ def filter_jsd_by_min_instances(jsd, gold_counts, min_instances=10):
 
 
 def evaluate_subtask1(gold_subtask1_path, predictions_subtask1_path):
-    gold_subtask1 = load_subtask1_labels(gold_subtask1_path)
-    predictions_subtask1 = load_subtask1_labels(predictions_subtask1_path)
+    predicted_counts, gold_counts, predictions_subtask1, gold_subtask1 = load_subtask1_labels(predictions_subtask1_path, gold_subtask1_path)
 
     fcubed_subtask1a = compute_bcubed(
         gold_subtask1,
@@ -137,13 +198,7 @@ def evaluate_subtask1(gold_subtask1_path, predictions_subtask1_path):
         predictions_subtask1_path,
     )
 
-    gold_counts, word2period = load_gold_label_counts(gold_subtask1_path)
     gold_JSD = calculate_JSD_distances(gold_counts)
-
-    predicted_counts = load_label_counts(
-        predictions_subtask1_path,
-        word2period,
-    )
     predicted_JSD = calculate_JSD_distances(predicted_counts)
 
     gold_JSD = filter_jsd_by_min_instances(
@@ -162,8 +217,7 @@ def evaluate_subtask1(gold_subtask1_path, predictions_subtask1_path):
 
 
 def evaluate_subtask2(gold_subtask2_path, predictions_subtask2_path):
-    gold_subtask2 = load_subtask2_labels(gold_subtask2_path)
-    predictions_subtask2 = load_subtask2_labels(predictions_subtask2_path)
+    predictions_subtask2, gold_subtask2 = load_subtask2_labels(predictions_subtask2_path,gold_subtask2_path)
 
     return compute_f1_score(
         gold_subtask2,

@@ -17,142 +17,6 @@ def period_sort_key(period_label: str) -> tuple[float, str]:
 
     return int(match.group()), period_label
 
-def load_label_counts(input_path: Path, word2period: dict) -> dict[str, dict[str, Counter]]:
-    """
-    Return fractional label counts indexed by word and period.
-
-    Structure:
-        counts[word][period][label] = fractional count
-
-    For example, labels [3, 4] contribute:
-        0.5 to label 3
-        0.5 to label 4
-    """
-    counts: dict[str, dict[str, Counter]] = defaultdict(
-        lambda: defaultdict(Counter)
-    )
-
-    with input_path.open("r", encoding="utf-8") as input_file:
-        for line_number, line in enumerate(input_file, start=1):
-            line = line.strip()
-
-            if not line:
-                continue
-
-            try:
-                observation = json.loads(line)
-            except json.JSONDecodeError as error:
-                raise ValueError(
-                    f"Invalid JSON on line {line_number}: {error}"
-                ) from error
-
-            missing_fields = {
-                field
-                for field in ("word", "sentence_id", "label")
-                if field not in observation
-            }
-
-            if missing_fields:
-                raise ValueError(
-                    f"Missing field(s) on line {line_number}: "
-                    f"{', '.join(sorted(missing_fields))}"
-                )
-
-            word = observation["word"]
-            sentence_id = observation["sentence_id"]
-            labels = observation["label"]
-            period = word2period[word][sentence_id]
-
-            if not isinstance(word, str) or not word:
-                raise ValueError(
-                    f"'word' must be a non-empty string on line {line_number}"
-                )
-
-            if not isinstance(labels, list):
-                raise ValueError(
-                    f"'label' must be a list on line {line_number}"
-                )
-
-            weight = 1.0 / len(labels)
-
-            for label in labels:
-                counts[word][period][label] += weight
-
-    return {word: dict(period_counts) for word, period_counts in counts.items()}
-
-
-def load_gold_label_counts(input_path: Path) -> dict[str, dict[str, Counter]]:
-    """
-    Return fractional label counts indexed by word and period.
-
-    Structure:
-        counts[word][period][label] = fractional count
-
-    For example, labels [3, 4] contribute:
-        0.5 to label 3
-        0.5 to label 4
-    """
-    word2period = {}
-    counts: dict[str, dict[str, Counter]] = defaultdict(
-        lambda: defaultdict(Counter)
-    )
-
-    with input_path.open("r", encoding="utf-8") as input_file:
-        for line_number, line in enumerate(input_file, start=1):
-            line = line.strip()
-
-            if not line:
-                continue
-
-            try:
-                observation = json.loads(line)
-            except json.JSONDecodeError as error:
-                raise ValueError(
-                    f"Invalid JSON on line {line_number}: {error}"
-                ) from error
-
-            missing_fields = {
-                field
-                for field in ("word", "period_label", "sentence_id", "label")
-                if field not in observation
-            }
-
-            if missing_fields:
-                raise ValueError(
-                    f"Missing field(s) on line {line_number}: "
-                    f"{', '.join(sorted(missing_fields))}"
-                )
-
-            word = observation["word"]
-            period = observation["period_label"]
-            sentence_id = observation["sentence_id"]
-            labels = observation["label"]
-            if not word in word2period:
-                word2period[word] = {}
-            word2period[word][sentence_id] = period
-
-            if not isinstance(word, str) or not word:
-                raise ValueError(
-                    f"'word' must be a non-empty string on line {line_number}"
-                )
-
-            if not isinstance(period, str) or not period:
-                raise ValueError(
-                    f"'period_label' must be a non-empty string "
-                    f"on line {line_number}"
-                )
-
-            if not isinstance(labels, list):
-                raise ValueError(
-                    f"'label' must be a list on line {line_number}"
-                )
-
-            weight = 1.0 / len(labels)
-
-            for label in labels:
-                counts[word][period][label] += weight
-
-    return {word: dict(period_counts) for word, period_counts in counts.items()}, word2period
 
 
 def normalize_distribution(counts: Counter, labels: list[Hashable]) -> list[float]:
@@ -206,95 +70,322 @@ def calculate_JSD_distances(counts: dict[str, dict[str, Counter]]) -> list[dict]
 
     return results
 
-def load_subtask2_labels(input_path: Path) -> dict[str, dict[str, Counter]]:
+def load_subtask2_labels(
+    input_path: Path,
+    gold_path: Path,
+) -> tuple[dict[str, int], dict[str, int]]:
+    """
+    Load gold and predicted Task 2 labels.
 
-    results = {}
+    Gold determines the expected (word, sentence_id) usages.
 
-    with open(input_path) as input_file:
-        for line_number, line in enumerate(input_file, start=1):
-            line = line.strip()
+    Returns:
+        predicted_labels:
+            Predicted labels indexed by "word;sentence_id".
 
-            if not line:
-                continue
+        gold_labels:
+            Gold labels indexed by "word;sentence_id".
+    """
 
-            try:
-                observation = json.loads(line)
-            except json.JSONDecodeError as error:
-                raise ValueError(
-                    f"Invalid JSON on line {line_number}: {error}"
-                ) from error
+    def load_file(path: Path) -> dict[tuple[str, str], int]:
+        labels_by_usage = {}
 
-            missing_fields = {
-                field
-                for field in ("word", "label")
-                if field not in observation
-            }
+        with path.open("r", encoding="utf-8") as input_file:
+            for line_number, line in enumerate(input_file, start=1):
+                line = line.strip()
 
-            if missing_fields:
-                raise ValueError(
-                    f"Missing field(s) on line {line_number}: "
-                    f"{', '.join(sorted(missing_fields))}"
-                )
+                if not line:
+                    continue
 
-            word = observation["word"]
-            sentence_id = observation["sentence_id"]
-            label = observation["label"]
+                try:
+                    observation = json.loads(line)
+                except json.JSONDecodeError as error:
+                    raise ValueError(
+                        f"Invalid JSON on line {line_number} of {path}: {error}"
+                    ) from error
 
-            if not type(label) == int:
-                raise ValueError(
-                    f"Label must be an integer on line {line_number}: "
-                )
+                required_fields = {"word", "sentence_id", "label"}
+                missing_fields = required_fields - observation.keys()
 
-            if not label == 0 and not label == 1:
-                raise ValueError(
-                    f"Label must be 0 or 1 on line {line_number}: "
-                )
+                if missing_fields:
+                    raise ValueError(
+                        f"Missing field(s) on line {line_number} of {path}: "
+                        f"{', '.join(sorted(missing_fields))}"
+                    )
 
-            results[f'{word};{sentence_id}'] = label
+                word = observation["word"]
+                sentence_id = observation["sentence_id"]
+                label = observation["label"]
 
-    return results
+                if not isinstance(word, str) or not word:
+                    raise ValueError(
+                        f"'word' must be a non-empty string "
+                        f"on line {line_number} of {path}"
+                    )
+
+                if not isinstance(sentence_id, str) or not sentence_id:
+                    raise ValueError(
+                        f"'sentence_id' must be a non-empty string "
+                        f"on line {line_number} of {path}"
+                    )
+
+                # Explicit type check is necessary because
+                # isinstance(True, int) is True.
+                if (
+                    not isinstance(label, int)
+                    or isinstance(label, bool)
+                    or label not in (0, 1)
+                ):
+                    raise ValueError(
+                        f"'label' must be integer 0 or 1 "
+                        f"on line {line_number} of {path}"
+                    )
+
+                key = (word, sentence_id)
+
+                # Reject duplicates even when the labels are identical.
+                if key in labels_by_usage:
+                    raise ValueError(
+                        f"Duplicate usage {key!r} "
+                        f"on line {line_number} of {path}"
+                    )
+
+                labels_by_usage[key] = label
+
+        return labels_by_usage
+
+    gold = load_file(gold_path)
+    predicted = load_file(input_path)
+
+    expected_keys = set(gold)
+    predicted_keys = set(predicted)
+
+    # Reject prediction usages that don't exist in gold.
+    unknown_keys = predicted_keys - expected_keys
+
+    if unknown_keys:
+        word, sentence_id = sorted(unknown_keys)[0]
+        raise ValueError(
+            f"Unknown usage in predictions: "
+            f"word={word!r}, sentence_id={sentence_id!r}"
+        )
+
+    # Reject usages expected by gold but missing from predictions.
+    missing_keys = expected_keys - predicted_keys
+
+    if missing_keys:
+        word, sentence_id = sorted(missing_keys)[0]
+        raise ValueError(
+            f"Missing expected usage in predictions: "
+            f"word={word!r}, sentence_id={sentence_id!r}"
+        )
+
+    predicted_labels = {
+        f"{word};{sentence_id}": predicted[(word, sentence_id)]
+        for word, sentence_id in gold
+    }
+
+    gold_labels = {
+        f"{word};{sentence_id}": gold[(word, sentence_id)]
+        for word, sentence_id in gold
+    }
+
+    return predicted_labels, gold_labels
 
 
+def load_subtask1_labels(
+    input_path: Path,
+    gold_path: Path,
+) -> tuple[
+    dict[str, dict[str, Counter]],
+    dict[str, dict[str, Counter]],
+    dict[str, list[int]],
+    dict[str, list[int]],
+]:
+    """
+    Load gold and predicted Task 1 labels.
 
-def load_subtask1_labels(input_path: Path) -> dict[str, dict[str, Counter]]:
+    Gold determines the expected usages and their periods.
 
-    results = {}
+    Returns:
+        predicted_counts:
+            Fractional predicted label counts by word and period.
 
-    with open(input_path) as input_file:
-        for line_number, line in enumerate(input_file, start=1):
-            line = line.strip()
+        gold_counts:
+            Fractional gold label counts by word and period.
 
-            if not line:
-                continue
+        predicted_labels:
+            Predicted labels indexed by "word;sentence_id".
 
-            try:
-                observation = json.loads(line)
-            except json.JSONDecodeError as error:
-                raise ValueError(
-                    f"Invalid JSON on line {line_number}: {error}"
-                ) from error
+        gold_labels:
+            Gold labels indexed by "word;sentence_id".
+    """
 
-            missing_fields = {
-                field
-                for field in ("word", "label")
-                if field not in observation
-            }
+    def load_file(
+        path: Path,
+        *,
+        require_period: bool,
+    ) -> dict[tuple[str, str], dict]:
+        observations = {}
 
-            if missing_fields:
-                raise ValueError(
-                    f"Missing field(s) on line {line_number}: "
-                    f"{', '.join(sorted(missing_fields))}"
-                )
+        with path.open("r", encoding="utf-8") as input_file:
+            for line_number, line in enumerate(input_file, start=1):
+                line = line.strip()
 
-            word = observation["word"]
-            sentence_id = observation["sentence_id"]
-            label = observation["label"]
+                if not line:
+                    continue
 
-            if not type(label) == list:
-                raise ValueError(
-                    f"Label must be a list on line {line_number}: "
-                )
+                try:
+                    observation = json.loads(line)
+                except json.JSONDecodeError as error:
+                    raise ValueError(
+                        f"Invalid JSON on line {line_number} of {path}: {error}"
+                    ) from error
 
-            results[f'{word};{sentence_id}'] = label
+                required_fields = {"word", "sentence_id", "label"}
 
-    return results
+                if require_period:
+                    required_fields.add("period_label")
+
+                missing_fields = required_fields - observation.keys()
+
+                if missing_fields:
+                    raise ValueError(
+                        f"Missing field(s) on line {line_number} of {path}: "
+                        f"{', '.join(sorted(missing_fields))}"
+                    )
+
+                word = observation["word"]
+                sentence_id = observation["sentence_id"]
+                labels = observation["label"]
+
+                if not isinstance(word, str) or not word:
+                    raise ValueError(
+                        f"'word' must be a non-empty string "
+                        f"on line {line_number} of {path}"
+                    )
+
+                if not isinstance(sentence_id, str) or not sentence_id:
+                    raise ValueError(
+                        f"'sentence_id' must be a non-empty string "
+                        f"on line {line_number} of {path}"
+                    )
+
+                if not isinstance(labels, list) or not labels:
+                    raise ValueError(
+                        f"'label' must be a non-empty list "
+                        f"on line {line_number} of {path}"
+                    )
+
+                # bool must be checked explicitly because
+                # isinstance(True, int) is True.
+                if any(
+                    not isinstance(label, int) or isinstance(label, bool)
+                    for label in labels
+                ):
+                    raise ValueError(
+                        f"All labels must be integers (not booleans) "
+                        f"on line {line_number} of {path}"
+                    )
+
+                if len(labels) != len(set(labels)):
+                    raise ValueError(
+                        f"Labels must be distinct "
+                        f"on line {line_number} of {path}"
+                    )
+
+                if require_period:
+                    period = observation["period_label"]
+
+                    if not isinstance(period, str) or not period:
+                        raise ValueError(
+                            f"'period_label' must be a non-empty string "
+                            f"on line {line_number} of {path}"
+                        )
+
+                key = (word, sentence_id)
+
+                if key in observations:
+                    raise ValueError(
+                        f"Duplicate usage {key!r} "
+                        f"on line {line_number} of {path}"
+                    )
+
+                observations[key] = observation
+
+        return observations
+
+    # Gold establishes the expected usages and periods.
+    gold = load_file(gold_path, require_period=True)
+    predicted = load_file(input_path, require_period=False)
+
+    expected_keys = set(gold)
+    predicted_keys = set(predicted)
+
+    unknown_keys = predicted_keys - expected_keys
+
+    if unknown_keys:
+        word, sentence_id = sorted(unknown_keys)[0]
+        raise ValueError(
+            f"Unknown usage in predictions: "
+            f"word={word!r}, sentence_id={sentence_id!r}"
+        )
+
+    missing_keys = expected_keys - predicted_keys
+
+    if missing_keys:
+        word, sentence_id = sorted(missing_keys)[0]
+        raise ValueError(
+            f"Missing expected usage in predictions: "
+            f"word={word!r}, sentence_id={sentence_id!r}"
+        )
+
+    predicted_counts: dict[str, dict[str, Counter]] = defaultdict(
+        lambda: defaultdict(Counter)
+    )
+    gold_counts: dict[str, dict[str, Counter]] = defaultdict(
+        lambda: defaultdict(Counter)
+    )
+
+    predicted_labels: dict[str, list[int]] = {}
+    gold_labels: dict[str, list[int]] = {}
+
+    for (word, sentence_id), gold_observation in gold.items():
+        period = gold_observation["period_label"]
+
+        predicted_label = predicted[(word, sentence_id)]["label"]
+        gold_label = gold_observation["label"]
+
+        usage_key = f"{word};{sentence_id}"
+
+        predicted_labels[usage_key] = predicted_label
+        gold_labels[usage_key] = gold_label
+
+        # Predicted fractional counts.
+        predicted_weight = 1.0 / len(predicted_label)
+
+        for label in predicted_label:
+            predicted_counts[word][period][label] += predicted_weight
+
+        # Gold fractional counts.
+        gold_weight = 1.0 / len(gold_label)
+
+        for label in gold_label:
+            gold_counts[word][period][label] += gold_weight
+
+    predicted_counts = {
+        word: dict(period_counts)
+        for word, period_counts in predicted_counts.items()
+    }
+
+    gold_counts = {
+        word: dict(period_counts)
+        for word, period_counts in gold_counts.items()
+    }
+
+    return (
+        predicted_counts,
+        gold_counts,
+        predicted_labels,
+        gold_labels,
+    )
