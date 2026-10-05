@@ -8,7 +8,7 @@ from typing import Hashable
 from scipy.spatial.distance import jensenshannon
 
 
-def period_sort_key(period_label: str) -> tuple[float, str]:
+def period_sort_key(period_label: str):
     """Sort period labels by their first four-digit year."""
     match = re.search(r"\d{4}", period_label)
 
@@ -19,7 +19,7 @@ def period_sort_key(period_label: str) -> tuple[float, str]:
 
 
 
-def normalize_distribution(counts: Counter, labels: list[Hashable]) -> list[float]:
+def normalize_distribution(counts: Counter, labels: list[Hashable]):
     """Convert fractional label counts into probabilities."""
     total = sum(counts.values())
 
@@ -30,7 +30,7 @@ def normalize_distribution(counts: Counter, labels: list[Hashable]) -> list[floa
 
 
 
-def calculate_JSD_distances(counts: dict[str, dict[str, Counter]]) -> list[dict]:
+def calculate_JSD_distances(counts: dict[str, dict[str, Counter]]):
 
     results = {}
 
@@ -72,8 +72,7 @@ def calculate_JSD_distances(counts: dict[str, dict[str, Counter]]) -> list[dict]
 
 def load_subtask2_labels(
     input_path: Path,
-    gold_path: Path,
-) -> tuple[dict[str, int], dict[str, int]]:
+    gold_path: Path):
     """
     Load gold and predicted Task 2 labels.
 
@@ -196,12 +195,7 @@ def load_subtask2_labels(
 def load_subtask1_labels(
     input_path: Path,
     gold_path: Path,
-) -> tuple[
-    dict[str, dict[str, Counter]],
-    dict[str, dict[str, Counter]],
-    dict[str, list[int]],
-    dict[str, list[int]],
-]:
+):
     """
     Load gold and predicted Task 1 labels.
 
@@ -225,7 +219,7 @@ def load_subtask1_labels(
         path: Path,
         *,
         require_period: bool,
-    ) -> dict[tuple[str, str], dict]:
+    ):
         observations = {}
 
         with path.open("r", encoding="utf-8") as input_file:
