@@ -93,6 +93,7 @@ def compute_f1_score(gold_labels, predicted_labels, filename):
         f1 = f1_score(
             gold_word,
             predicted_word,
+            average='macro'
         )
 
         word_scores[word] = float(f1)
