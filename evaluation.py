@@ -1,9 +1,9 @@
 import argparse
 import json
 import zipfile
-import numpy as np
 from pathlib import Path
 import bcubed
+import numpy as np
 import tempfile
 from scipy.stats import spearmanr
 from sklearn.metrics import f1_score
@@ -131,12 +131,13 @@ def compute_bcubed(gold_labels, predicted_labels, filename):
             predicted_word[j] = set(predicted_labels[item])
 
         precision = bcubed.precision(
-            gold_word,
             predicted_word,
+            gold_word
         )
         recall = bcubed.recall(
-            gold_word,
             predicted_word,
+            gold_word
+
         )
         fcubed = bcubed.fscore(
             precision,
