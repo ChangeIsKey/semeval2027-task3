@@ -3,6 +3,7 @@ import json
 import zipfile
 from pathlib import Path
 import bcubed
+import tempfile
 from scipy.stats import spearmanr
 from sklearn.metrics import f1_score
 from collections import Counter, defaultdict
@@ -13,14 +14,12 @@ from evaluation_utils import (
 )
 
 
-def open_submission_zip(submission_path: Path, logs):
+def open_submission_zip(submission_path: Path, extraction_dir: Path, logs):
     if not submission_path.exists():
         raise FileNotFoundError(f"Submission not found: {submission_path}")
 
     if not zipfile.is_zipfile(submission_path):
         raise ValueError(f"Submission is not a valid ZIP file: {submission_path}")
-
-    extraction_dir = Path("submission_extracted")
 
     with zipfile.ZipFile(submission_path, "r") as zip_file:
         files = [
@@ -29,16 +28,14 @@ def open_submission_zip(submission_path: Path, logs):
             if not info.is_dir()
         ]
 
-        logs.append(
-            {
-                "level": "info",
-                "message": f"Found {len(files)} files in submission.",
-            }
-        )
+        logs.append({
+            "level": "info",
+            "message": f"Found {len(files)} files in submission.",
+        })
 
         zip_file.extractall(extraction_dir)
 
-    return extraction_dir, files
+    return files
 
 
 def compute_spearman(gold_JSD, predicted_JSD, filename):
@@ -313,159 +310,163 @@ def main():
         "logs": [],
     }
 
-    try:
-        extraction_dir, files = open_submission_zip(
-            args.submission,
-            evaluation["logs"],
-        )
-    except Exception as exc:
-        evaluation["errors"].append({
-            "scope": "submission",
-            "message": str(exc),
-        })
+    with tempfile.TemporaryDirectory() as temp_dir:
+        extraction_dir = Path(temp_dir)
+
+        try:
+            files = open_submission_zip(
+                args.submission,
+                extraction_dir,
+                evaluation["logs"],
+            )
+        except Exception as exc:
+            evaluation["errors"].append({
+                "scope": "submission",
+                "message": str(exc),
+            })
+
+            args.output.write_text(
+                json.dumps(evaluation, indent=2),
+                encoding="utf-8",
+            )
+            return
+
+        subtask1_files = [
+            f for f in files
+            if f.endswith("_subtask1.jsonl")
+        ]
+
+        subtask2_files = [
+            f for f in files
+            if f.endswith("_subtask2.jsonl")
+        ]
+
+        languages_subtask1 = []
+
+        for filename in subtask1_files:
+            language = Path(filename).name.split("_")[0]
+
+            if language not in allowed_languages:
+                evaluation["logs"].append({
+                    "level": "warning",
+                    "message": (
+                        f"Skipping {filename}: "
+                        f"language {language} not supported."
+                    ),
+                })
+            else:
+                languages_subtask1.append(language)
+
+        languages_subtask2 = []
+
+        for filename in subtask2_files:
+            language = Path(filename).name.split("_")[0]
+
+            if language not in allowed_languages:
+                evaluation["logs"].append({
+                    "level": "warning",
+                    "message": (
+                        f"Skipping {filename}: "
+                        f"language {language} not supported."
+                    ),
+                })
+            else:
+                languages_subtask2.append(language)
+
+        # Avoid accidentally evaluating the same language twice.
+        languages_subtask1 = sorted(set(languages_subtask1))
+        languages_subtask2 = sorted(set(languages_subtask2))
+
+        for language in languages_subtask1:
+            gold_path = (
+                args.gold_folder
+                / language
+                / "subtask1.jsonl"
+            )
+
+            predictions_path = (
+                extraction_dir
+                / f"{language}_subtask1.jsonl"
+            )
+
+            try:
+                result_1a, result_1b = evaluate_subtask1(
+                    gold_path,
+                    predictions_path,
+                )
+
+                evaluation["results"]["subtask1a"][language] = result_1a
+                evaluation["results"]["subtask1b"][language] = result_1b
+
+                evaluation["logs"].append({
+                    "level": "info",
+                    "language": language,
+                    "subtask": "subtask1",
+                    "message": "Evaluation completed successfully.",
+                })
+
+            except Exception as exc:
+                evaluation["errors"].append({
+                    "language": language,
+                    "subtask": "subtask1",
+                    "message": str(exc),
+                })
+
+        for language in languages_subtask2:
+            gold_path = (
+                args.gold_folder
+                / language
+                / "subtask2.jsonl"
+            )
+
+            predictions_path = (
+                extraction_dir
+                / f"{language}_subtask2.jsonl"
+            )
+
+            try:
+                result_2 = evaluate_subtask2(
+                    gold_path,
+                    predictions_path,
+                )
+
+                evaluation["results"]["subtask2"][language] = result_2
+
+                evaluation["logs"].append({
+                    "level": "info",
+                    "language": language,
+                    "subtask": "subtask2",
+                    "message": "Evaluation completed successfully.",
+                })
+
+            except Exception as exc:
+                evaluation["errors"].append({
+                    "language": language,
+                    "subtask": "subtask2",
+                    "message": str(exc),
+                })
+
+        add_averages(evaluation["results"])
 
         args.output.write_text(
-            json.dumps(evaluation, indent=2),
+            json.dumps(
+                evaluation,
+                indent=2,
+                ensure_ascii=False,
+                allow_nan=False,
+            ),
             encoding="utf-8",
         )
-        return
 
-    subtask1_files = [
-        f for f in files
-        if f.endswith("_subtask1.jsonl")
-    ]
-
-    subtask2_files = [
-        f for f in files
-        if f.endswith("_subtask2.jsonl")
-    ]
-
-    languages_subtask1 = []
-
-    for filename in subtask1_files:
-        language = Path(filename).name.split("_")[0]
-
-        if language not in allowed_languages:
-            evaluation["logs"].append({
-                "level": "warning",
-                "message": (
-                    f"Skipping {filename}: "
-                    f"language {language} not supported."
-                ),
-            })
-        else:
-            languages_subtask1.append(language)
-
-    languages_subtask2 = []
-
-    for filename in subtask2_files:
-        language = Path(filename).name.split("_")[0]
-
-        if language not in allowed_languages:
-            evaluation["logs"].append({
-                "level": "warning",
-                "message": (
-                    f"Skipping {filename}: "
-                    f"language {language} not supported."
-                ),
-            })
-        else:
-            languages_subtask2.append(language)
-
-    # Avoid accidentally evaluating the same language twice.
-    languages_subtask1 = sorted(set(languages_subtask1))
-    languages_subtask2 = sorted(set(languages_subtask2))
-
-    for language in languages_subtask1:
-        gold_path = (
-            args.gold_folder
-            / language
-            / "subtask1.jsonl"
-        )
-
-        predictions_path = (
-            extraction_dir
-            / f"{language}_subtask1.jsonl"
-        )
-
-        try:
-            result_1a, result_1b = evaluate_subtask1(
-                gold_path,
-                predictions_path,
+        # Also emit the complete result to stdout.
+        print(
+            json.dumps(
+                evaluation,
+                indent=2,
+                ensure_ascii=False,
+                allow_nan=False,
             )
-
-            evaluation["results"]["subtask1a"][language] = result_1a
-            evaluation["results"]["subtask1b"][language] = result_1b
-
-            evaluation["logs"].append({
-                "level": "info",
-                "language": language,
-                "subtask": "subtask1",
-                "message": "Evaluation completed successfully.",
-            })
-
-        except Exception as exc:
-            evaluation["errors"].append({
-                "language": language,
-                "subtask": "subtask1",
-                "message": str(exc),
-            })
-
-    for language in languages_subtask2:
-        gold_path = (
-            args.gold_folder
-            / language
-            / "subtask2.jsonl"
         )
-
-        predictions_path = (
-            extraction_dir
-            / f"{language}_subtask2.jsonl"
-        )
-
-        try:
-            result_2 = evaluate_subtask2(
-                gold_path,
-                predictions_path,
-            )
-
-            evaluation["results"]["subtask2"][language] = result_2
-
-            evaluation["logs"].append({
-                "level": "info",
-                "language": language,
-                "subtask": "subtask2",
-                "message": "Evaluation completed successfully.",
-            })
-
-        except Exception as exc:
-            evaluation["errors"].append({
-                "language": language,
-                "subtask": "subtask2",
-                "message": str(exc),
-            })
-
-    add_averages(evaluation["results"])
-
-    args.output.write_text(
-        json.dumps(
-            evaluation,
-            indent=2,
-            ensure_ascii=False,
-            allow_nan=False,
-        ),
-        encoding="utf-8",
-    )
-
-    # Also emit the complete result to stdout.
-    print(
-        json.dumps(
-            evaluation,
-            indent=2,
-            ensure_ascii=False,
-            allow_nan=False,
-        )
-    )
 
 
 if __name__ == "__main__":
