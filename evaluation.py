@@ -1,6 +1,7 @@
 import argparse
 import json
 import zipfile
+import numpy as np
 from pathlib import Path
 import bcubed
 import tempfile
@@ -56,7 +57,7 @@ def compute_spearman(gold_JSD, predicted_JSD, filename):
     rho, pvalue = spearmanr(gold_scores, predicted_scores)
 
     return {
-        "rho": float(rho),
+        "rho": float(rho) if not np.isnan(rho) else 0,
         "pvalue": float(pvalue),
     }
 
